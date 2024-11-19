@@ -1,0 +1,3 @@
+/home/edu_val/CLionProjects/TareaSO3/cmake-build-debug/CMakeFiles/TareaSO3.dir
+/home/edu_val/CLionProjects/TareaSO3/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/edu_val/CLionProjects/TareaSO3/cmake-build-debug/CMakeFiles/rebuild_cache.dir
