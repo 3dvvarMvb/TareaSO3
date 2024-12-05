@@ -63,7 +63,7 @@ void generarProcesos(int tam_proceso_min_kb, int tam_proceso_max_kb) {
     int id_proceso_actual = 1;
     random_device rd;
     mt19937 gen(rd());
-    uniform_int_distribution<> dis_pagina(1, tam_pagina_kb); // Random page size between 1 and tam_pagina_kb
+    uniform_int_distribution<> dis_pagina(1, tam_pagina_kb); // largo de pagina random entre 1 y tam_pagina_kb
 
     while (!terminar_programa) {
         this_thread::sleep_for(chrono::seconds(2));
