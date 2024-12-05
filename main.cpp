@@ -4,22 +4,45 @@
 #include <chrono>
 #include <vector>
 #include <queue>
+#include <mutex>
+#include <algorithm>
 
 using namespace std;
 
+// Estructura para representar una página
+struct Pagina {
+    int id_proceso;
+    int num_pagina;
+    bool en_RAM;
+};
+
+// Estructura para representar un proceso
 struct Proceso {
-    float Tam_proceso;
-    int pagina;
+    int id_proceso;
+    int tam_proceso_kb;
+    int num_paginas;
+    vector<Pagina> tabla_paginas;
 };
 
+// Estructura para representar la memoria swap
 struct Memoria_Swap {
-    float Tam_Memoria_Swap;
-    vector<Proceso> Paginas_Swap;
+    int tam_memoria_swap_kb;
+    vector<Pagina> paginas_swap;
 };
 
-vector<Proceso> Memoria;
-Memoria_Swap MemoriaSwap;
+vector<Pagina> memoria_RAM;
+Memoria_Swap memoriaSwap;
+vector<Proceso> lista_procesos;
 
+int tam_memoria_fisica_kb;
+int tam_pagina_kb;
+int num_marcos_RAM;
+int num_marcos_swap;
+
+mutex mtx_memoria;
+bool terminar_programa = false;
+
+// Generar un valor aleatorio entre 1.5 y 4.5
 float generarValorAleatorio() {
     random_device rd;
     mt19937 gen(rd());
@@ -27,139 +50,210 @@ float generarValorAleatorio() {
     return dis(gen);
 }
 
-float generarTamanioProceso(int min, int max) {
+// Generar tamaño de proceso aleatorio entre min y max
+int generarTamanioProceso(int min_kb, int max_kb) {
     random_device rd;
     mt19937 gen(rd());
-    uniform_real_distribution<> dis(min, max);
+    uniform_int_distribution<> dis(min_kb, max_kb);
     return dis(gen);
 }
 
-void generarProcesos(vector<Proceso>& memoria, float Min_Proceso, float Max_Proceso, int Cantidad_frames, int Cantidad_paginas) {
+// Función para generar procesos
+void generarProcesos(int tam_proceso_min_kb, int tam_proceso_max_kb) {
+    int id_proceso_actual = 1;
     random_device rd;
     mt19937 gen(rd());
-    uniform_int_distribution<> dis(0, Cantidad_paginas - 1);
+    uniform_int_distribution<> dis_pagina(1, tam_pagina_kb); // Random page size between 1 and tam_pagina_kb
 
-    queue<Proceso> colaProcesos;
-
-    while (true) {
-        if (memoria.size()>=Cantidad_frames && (Memoria_Swap().Paginas_Swap).size()>=Cantidad_frames) {
-            cout << "Memoria llena" << endl;
-            exit(0);
-        }
-
-        Proceso nuevoProceso;
-        nuevoProceso.Tam_proceso = generarTamanioProceso(Min_Proceso, Max_Proceso);
-        nuevoProceso.pagina = dis(gen);
-        colaProcesos.push(nuevoProceso);
-
-        cout << "Nuevo proceso generado con tamaño: " << nuevoProceso.Tam_proceso << endl;
-
-        // FIFO Paging Algorithm
-        while (!colaProcesos.empty() && memoria.size() < Cantidad_frames) {
-            Proceso proceso = colaProcesos.front();
-            colaProcesos.pop();
-            memoria.push_back(proceso);
-            cout << "Proceso asignado a la memoria con tamaño: " << proceso.Tam_proceso << endl;
-        }
-
+    while (!terminar_programa) {
         this_thread::sleep_for(chrono::seconds(2));
+
+        Proceso nuevo_proceso;
+        nuevo_proceso.id_proceso = id_proceso_actual++;
+        nuevo_proceso.tam_proceso_kb = generarTamanioProceso(tam_proceso_min_kb, tam_proceso_max_kb);
+        nuevo_proceso.num_paginas = (nuevo_proceso.tam_proceso_kb + tam_pagina_kb - 1) / tam_pagina_kb;
+
+        // Crear las páginas del proceso
+        for (int i = 0; i < nuevo_proceso.num_paginas; ++i) {
+            Pagina nueva_pagina;
+            nueva_pagina.id_proceso = nuevo_proceso.id_proceso;
+            nueva_pagina.num_pagina = dis_pagina(gen); // Assign random page number
+            nueva_pagina.en_RAM = false;
+            nuevo_proceso.tabla_paginas.push_back(nueva_pagina);
+        }
+
+        // Asignar páginas a RAM o Swap
+        {
+            lock_guard<mutex> lock(mtx_memoria);
+
+            for (auto& pagina : nuevo_proceso.tabla_paginas) {
+                if (memoria_RAM.size() < num_marcos_RAM) {
+                    memoria_RAM.push_back(pagina);
+                    pagina.en_RAM = true;
+                }
+                else if (memoriaSwap.paginas_swap.size() < num_marcos_swap) {
+                    memoriaSwap.paginas_swap.push_back(pagina);
+                    pagina.en_RAM = false;
+                }
+                else {
+                    cout << "No hay espacio en RAM ni en Swap. Terminando simulación." << endl;
+                    terminar_programa = true;
+                    return;
+                }
+            }
+            lista_procesos.push_back(nuevo_proceso);
+            cout << "Proceso " << nuevo_proceso.id_proceso << " creado con tamaño " << nuevo_proceso.tam_proceso_kb << " KB (" << nuevo_proceso.num_paginas << " páginas)" << endl;
+        }
     }
 }
 
-void terminarProcesoAleatorio(vector<Proceso>& memoria) {
+// Función para terminar procesos aleatoriamente
+void terminarProcesoAleatorio() {
     random_device rd;
     mt19937 gen(rd());
-    while (true) {
+
+    while (!terminar_programa) {
         this_thread::sleep_for(chrono::seconds(5));
-        if (!memoria.empty()) {
-            uniform_int_distribution<> dis(0, memoria.size() - 1);
+
+        lock_guard<mutex> lock(mtx_memoria);
+
+        if (!lista_procesos.empty()) {
+            uniform_int_distribution<> dis(0, lista_procesos.size() - 1);
             int index = dis(gen);
-            cout << "Proceso terminado con tamaño: " << memoria[index].Tam_proceso << endl;
-            memoria.erase(memoria.begin() + index);
+            Proceso proceso_a_terminar = lista_procesos[index];
+
+            // Liberar páginas de RAM y Swap
+            memoria_RAM.erase(remove_if(memoria_RAM.begin(), memoria_RAM.end(),
+                [proceso_a_terminar](Pagina& p) { return p.id_proceso == proceso_a_terminar.id_proceso; }), memoria_RAM.end());
+
+            memoriaSwap.paginas_swap.erase(remove_if(memoriaSwap.paginas_swap.begin(), memoriaSwap.paginas_swap.end(),
+                [proceso_a_terminar](Pagina& p) { return p.id_proceso == proceso_a_terminar.id_proceso; }), memoriaSwap.paginas_swap.end());
+
+            lista_procesos.erase(lista_procesos.begin() + index);
+
+            cout << "Proceso " << proceso_a_terminar.id_proceso << " terminado y sus páginas liberadas." << endl;
         }
     }
 }
 
-void accederDireccionAleatoria(vector<Proceso>& memoria, Memoria_Swap& swap, int TamFrames, int Cantidad_paginas) {
+// Función para acceder a direcciones virtuales aleatoriamente
+void accederDireccionAleatoria() {
     random_device rd;
     mt19937 gen(rd());
-    uniform_int_distribution<> dis(0, Cantidad_paginas - 1);
 
-    while (true) {
+    while (!terminar_programa) {
         this_thread::sleep_for(chrono::seconds(5));
-        int paginaSolicitada = dis(gen);
-        bool estaEnRAM = false;
 
-        for (const Proceso& p : memoria) {
-            if (p.pagina == paginaSolicitada) {
-                estaEnRAM = true;
-                cout << "Página " << paginaSolicitada << " accedida en RAM." << endl;
-                break;
+        lock_guard<mutex> lock(mtx_memoria);
+
+        if (!lista_procesos.empty()) {
+            uniform_int_distribution<> dis_proc(0, lista_procesos.size() - 1);
+            int index_proceso = dis_proc(gen);
+            Proceso& proceso = lista_procesos[index_proceso];
+
+            uniform_int_distribution<> dis_pagina(0, proceso.num_paginas - 1);
+            int num_pagina = dis_pagina(gen);
+
+            Pagina& pagina = proceso.tabla_paginas[num_pagina];
+
+            cout << "Accediendo a página " << num_pagina << " del proceso " << proceso.id_proceso << endl;
+
+            if (pagina.en_RAM) {
+                cout << "La página " << num_pagina << " del proceso " << proceso.id_proceso << " está en RAM. Acceso exitoso." << endl;
             }
-        }
+            else{
+                cout << "Page fault: La página " << num_pagina << " del proceso " << proceso.id_proceso << " no está en RAM." << endl;
 
-        if (!estaEnRAM) {
-            cout << "Page fault: Página " << paginaSolicitada << " no está en RAM." << endl;
-            // Mover página de swap a RAM
-            if (memoria.size() >= TamFrames) {
-                Proceso reemplazado = memoria.front(); // Política FIFO
-                memoria.erase(memoria.begin());
-                swap.Paginas_Swap.push_back(reemplazado);
-                cout << "Página " << reemplazado.pagina << " reemplazada de RAM a Swap." << endl;
+                // Mover página a RAM
+                if (memoria_RAM.size() < num_marcos_RAM) {
+                    memoria_RAM.push_back(pagina);
+                    pagina.en_RAM = true;
+
+                    // Eliminar de Swap
+                    memoriaSwap.paginas_swap.erase(remove_if(memoriaSwap.paginas_swap.begin(), memoriaSwap.paginas_swap.end(),
+                        [pagina](Pagina& p) { return p.id_proceso == pagina.id_proceso && p.num_pagina == pagina.num_pagina; }), memoriaSwap.paginas_swap.end());
+
+                    cout << "Página " << num_pagina << " del proceso " << proceso.id_proceso << " cargada en RAM." << endl;
+                } else {
+                    // Reemplazo FIFO
+                    Pagina pagina_a_reemplazar = memoria_RAM.front();
+                    memoria_RAM.erase(memoria_RAM.begin());
+                    pagina_a_reemplazar.en_RAM = false;
+                    memoriaSwap.paginas_swap.push_back(pagina_a_reemplazar);
+
+                    memoria_RAM.push_back(pagina);
+                    pagina.en_RAM = true;
+
+                    cout << "Se reemplazó la página " << pagina_a_reemplazar.num_pagina << " del proceso " << pagina_a_reemplazar.id_proceso
+                         << " por la página " << pagina.num_pagina << " del proceso " << pagina.id_proceso << " en RAM." << endl;
+                }
             }
-
-            Proceso nuevaPagina;
-            nuevaPagina.pagina = paginaSolicitada;
-            memoria.push_back(nuevaPagina);
-            cout << "Página " << paginaSolicitada << " cargada en RAM desde Swap." << endl;
         }
     }
 }
-
 
 int main() {
-    float memoriaFisica, memoriaVirtual, TamanioPagina, TamFrames;
-    cout << "Ingrese el tamaño de la memoria fisica en MB" << endl;
-    cin >> memoriaFisica;
+    // Solicitar memoria física y tamaño de página
+    float memoriaFisica_MB;
+    cout << "Ingrese el tamaño de la memoria física en MB: ";
+    cin >> memoriaFisica_MB;
 
-    memoriaVirtual = memoriaFisica * generarValorAleatorio();
+    tam_memoria_fisica_kb = memoriaFisica_MB * 1024; // Convertir a KB
 
-    cout << "Ingresse el tamaño de las paginas" << endl;
-    cin >> TamanioPagina;
+    cout << "Ingrese el tamaño de las páginas en KB: ";
+    cin >> tam_pagina_kb;
 
-    TamFrames = TamanioPagina;
-
-    if (memoriaFisica <= 0 || TamanioPagina <= 0) {
+    if (tam_memoria_fisica_kb <= 0 || tam_pagina_kb <= 0) {
         cerr << "Error: El tamaño de la memoria física y el tamaño de las páginas deben ser positivos." << endl;
         return 1;
     }
 
-    int Cantidad_frames = memoriaFisica / TamFrames;
-    int Cantidad_paginas = memoriaVirtual / TamanioPagina;
+    // Solicitar tamaño mínimo y máximo de los procesos
+    int tam_proceso_min_kb, tam_proceso_max_kb;
+    cout << "Ingrese el tamaño mínimo de los procesos en KB: ";
+    cin >> tam_proceso_min_kb;
+    cout << "Ingrese el tamaño máximo de los procesos en KB: ";
+    cin >> tam_proceso_max_kb;
 
-    float Min_Proceso, Max_Proceso;
-
-    cout << "Ingrese el tamaño minimo y maximo del proceso en ese orden:" << endl;
-    cin >> Min_Proceso;
-    cin >> Max_Proceso;
-
-    if (Min_Proceso > Max_Proceso) {
-        cerr << "Error: El tamaño mínimo del proceso no puede ser mayor que el tamaño máximo." << endl;
+    if (tam_proceso_min_kb <= 0 || tam_proceso_max_kb <= 0 || tam_proceso_min_kb > tam_proceso_max_kb) {
+        cerr << "Error: Los tamaños de los procesos deben ser positivos y el tamaño mínimo debe ser menor o igual al tamaño máximo." << endl;
         return 1;
     }
 
-    Memoria.resize(Cantidad_paginas);
+    // Calcular memoria virtual
+    float factor = generarValorAleatorio();
+    int tam_memoria_virtual_kb = tam_memoria_fisica_kb * factor;
 
-    MemoriaSwap.Tam_Memoria_Swap = memoriaVirtual;
-    MemoriaSwap.Paginas_Swap.resize(Cantidad_paginas);
+    // Calcular número de marcos
+    num_marcos_RAM = tam_memoria_fisica_kb / tam_pagina_kb;
+    int num_marcos_virtual = tam_memoria_virtual_kb / tam_pagina_kb;
+    num_marcos_swap = num_marcos_virtual - num_marcos_RAM;
 
-    thread generador(generarProcesos, ref(Memoria), Min_Proceso, Max_Proceso, Cantidad_frames);
-    thread terminador(terminarProcesoAleatorio, ref(Memoria));
+    memoriaSwap.tam_memoria_swap_kb = tam_memoria_virtual_kb - tam_memoria_fisica_kb;
 
-    // Para detener el programa después de un tiempo, por ejemplo, 20 segundos
-    this_thread::sleep_for(chrono::seconds(20));
-    generador.detach();
-    terminador.detach();
+    cout << "Memoria física: " << tam_memoria_fisica_kb << " KB (" << num_marcos_RAM << " marcos)" << endl;
+    cout << "Memoria virtual: " << tam_memoria_virtual_kb << " KB (" << num_marcos_virtual << " marcos)" << endl;
+    cout << "Memoria swap: " << memoriaSwap.tam_memoria_swap_kb << " KB (" << num_marcos_swap << " marcos)" << endl;
+
+    // Iniciar hilos
+    thread hilo_generador([tam_proceso_min_kb, tam_proceso_max_kb]() {
+        generarProcesos(tam_proceso_min_kb, tam_proceso_max_kb);
+    });
+    thread hilo_terminador(terminarProcesoAleatorio);
+    thread hilo_acceso(accederDireccionAleatoria);
+
+    // Esperar a que el usuario presione una tecla para terminar
+    cout << "Presione Enter para terminar la simulación..." << endl;
+    cin.ignore();
+    cin.get();
+    terminar_programa = true;
+
+    // Unir hilos
+    hilo_generador.join();
+    hilo_terminador.join();
+    hilo_acceso.join();
+
+    cout << "Simulación terminada." << endl;
 
     return 0;
 }
